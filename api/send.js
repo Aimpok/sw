@@ -14,6 +14,7 @@ if (!admin.apps.length) {
 }
 
 export default async function handler(req, res) {
+  // CORS Headers
   res.setHeader('Access-Control-Allow-Credentials', true);
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS,PATCH,DELETE,POST,PUT');
@@ -23,6 +24,7 @@ export default async function handler(req, res) {
 
   let body = req.body;
 
+  // --- РУЧНОЙ ПАРСИНГ ТЕЛА ЗАПРОСА (на случай проблем с Vercel/Next.js) ---
   if (!body || Object.keys(body).length === 0) {
     try {
       const buffers = [];
@@ -48,14 +50,14 @@ export default async function handler(req, res) {
 
   body = body || {};
 
-  const { senderId, receiverId, text } = body;
-  console.log(`[REQUEST] From: ${senderId}, To: ${receiverId}, Text: ${text}`);
+  // 1. ДОБАВЛЕНО ПОЛЕ type
+  const { senderId, receiverId, text, type } = body;
+  console.log(`[REQUEST] From: ${senderId}, To: ${receiverId}, Type: ${type}, Text: ${text}`);
 
   if (!senderId || !receiverId || !text) {
     return res.status(400).json({ 
       error: "Missing data in request body", 
-      received: body,
-      typeOfBody: typeof body
+      received: body
     });
   }
 
@@ -68,25 +70,34 @@ export default async function handler(req, res) {
       return res.status(200).json({ status: "No token" });
     }
 
-    // --- ПРОВЕРКА НА ОФФЛАЙН ---
-    // Если получатель сидит в приложении (Online), мы НЕ отправляем пуш
-    if (receiver.status === "Online") {
-      console.log(`User ${receiverId} is Online. Push skipped.`);
+    // --- 2. ОБНОВЛЕННАЯ ЛОГИКА ОФФЛАЙН ---
+    // Если это ЗВОНОК ('call'), мы отправляем пуш ВСЕГДА, даже если юзер Online.
+    // Если это ОБЫЧНОЕ сообщение, мы пропускаем пуш, если юзер Online.
+    const isCall = (type === 'call');
+
+    if (!isCall && receiver.status === "Online") {
+      console.log(`User ${receiverId} is Online and type is not call. Push skipped.`);
       return res.status(200).json({ status: "User is online, push skipped" });
     }
 
     const senderSnap = await admin.database().ref(`/users/${senderId}`).once('value');
     const sender = senderSnap.val();
-    const senderName = sender ? sender.name : "New Message";
+    const senderName = sender ? sender.name : "User";
 
+    // --- 3. ОБНОВЛЕННЫЙ PAYLOAD ---
+    // Добавляем 'type' в data, чтобы Android мог его считать
     const message = {
       token: receiver.fcmToken,
       data: {
         title: senderName,
         body: String(text),
-        senderId: String(senderId)
+        senderId: String(senderId),
+        type: String(type || 'message') // Передаем тип (call или message)
       },
-      android: { priority: "high" }
+      android: { 
+        priority: "high",
+        ttl: isCall ? 0 : 2419200 // Для звонков ttl 0 (доставить мгновенно или никогда)
+      }
     };
 
     const response = await admin.messaging().send(message);
